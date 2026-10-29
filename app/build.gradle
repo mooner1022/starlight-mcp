@@ -1,0 +1,79 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.serialization'
+    id 'io.github.mooner1022.slplugin'
+}
+
+android {
+    namespace 'dev.mooner.starlightmcp'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "dev.mooner.starlightmcp"
+        minSdk 26
+        targetSdk 33
+        versionCode 1
+        // Used as the plugin version in starlight.json checks.
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_11.toString()
+    }
+    testOptions {
+        unitTests.returnDefaultValues = true
+        unitTests.all { test ->
+            // Tests have Ktor and SLF4J without the Ktor plugin's provider.
+            test.systemProperty 'slf4j.provider', 'org.slf4j.helpers.NOP_FallbackServiceProvider'
+            // Lets the test client send headers such as Origin.
+            test.systemProperty 'sun.net.http.allowRestrictedHeaders', 'true'
+        }
+    }
+}
+
+starlight {
+    sdk {
+        // Build these from the StarLight repository: ./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease
+        pluginCore = file("libs/PluginCore-release.aar")
+        configDsl = file("libs/ConfigDSL-release.aar")
+        excludeHostKotlinLibraries = true
+    }
+    deploy {
+        // Pass -Pstarlight.device=<serial or ip:port> or set STARLIGHT_DEVICE.
+        // Restarting force-stops StarLight on the device; opt in per run with -Pstarlight.restartApp=true.
+    }
+}
+
+def ktorVersion = "3.6.0"
+
+dependencies {
+    // Provided by StarLight at runtime.
+    compileOnly "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0"
+    compileOnly "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
+    compileOnly "androidx.core:core-ktx:1.16.0"
+    compileOnly "androidx.appcompat:appcompat:1.7.0"
+    compileOnly "com.google.android.material:material:1.12.0"
+    // StarLight's NeonJS engine: handlers' JS values and promises arrive as NeonValues.
+    compileOnly "dev.mooner.neonjs:neonjs-core:0.1.5"
+    // Provided by the Ktor plugin (starlight.json: "ktor@3.6.0"); keep the versions equal.
+    compileOnly "io.ktor:ktor-server-cio:$ktorVersion"
+
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0"
+    testImplementation "dev.mooner.neonjs:neonjs-core:0.1.5"
+    testImplementation "io.ktor:ktor-server-cio:$ktorVersion"
+    // Checks tools written in Rhino, StarLight's legacy engine.
+    testImplementation "org.mozilla:rhino:1.7.15"
+}

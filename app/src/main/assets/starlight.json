@@ -1,0 +1,11 @@
+{
+  "id":"mcp",
+  "name":"MCP Server",
+  "main_class":"dev.mooner.starlightmcp.StarlightMcpPlugin",
+  "version":"0.1.0",
+  "api_version":"0.3.2",
+  "assetRevision":1,
+  "dependency":["ktor@3.6.0"],
+  "authors":["mooner"],
+  "description":"Model Context Protocol server exposing StarLight and tools defined by projects"
+}
