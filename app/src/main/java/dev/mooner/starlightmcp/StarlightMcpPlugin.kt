@@ -23,8 +23,6 @@ import dev.mooner.starlight.plugincore.project.event.ProjectEventManager
 import dev.mooner.starlightmcp.api.McpApi
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
 import dev.mooner.starlightmcp.builtin.BuiltinTools
-import dev.mooner.starlightmcp.builtin.SessionHost
-import dev.mooner.starlightmcp.builtin.toEntry
 import dev.mooner.starlightmcp.event.McpSetupEvent
 import dev.mooner.starlightmcp.project.ProjectToolOwner
 import dev.mooner.starlightmcp.protocol.McpProtocol
@@ -39,6 +37,7 @@ import dev.mooner.starlightmcp.utils.LOCALHOST
 import dev.mooner.starlightmcp.utils.copyServerUrl
 import dev.mooner.starlightmcp.utils.sha256Hex
 import dev.mooner.starlightmcp.utils.tr
+import dev.mooner.starlightworkspace.Workspaces
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,7 +65,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
     /** Accessed on [serverExecutor] only. */
     private var engine: HttpServerEngine? = null
 
-    private val builtinTools = BuiltinTools(SessionHost(McpRuntime.appLogs))
+    private val builtinTools = BuiltinTools { Workspaces.current }
 
     @Volatile
     private var settings = ServerSettings()
@@ -84,6 +83,16 @@ class StarlightMcpPlugin : StarlightPlugin() {
         get() = McpRuntime.state.value is ServerState.Running
 
     override fun onEnable() {
+        // StarLight checks only the major and minor version of the workspace plugin, not the patch this was built for.
+        if (Workspaces.apiLevel < Workspaces.API_LEVEL) {
+            LOG.error(LogData.FLAG_NOTIFY) {
+                tr(
+                    "Update the Workspace plugin: MCP Server needs its API level ${Workspaces.API_LEVEL} or later.",
+                    "Workspace 플러그인을 업데이트하세요: MCP 서버에는 API 레벨 ${Workspaces.API_LEVEL} 이상이 필요해요.",
+                )
+            }
+            return
+        }
         updateConfig(getPluginConfig())
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         pluginScope = scope
@@ -95,7 +104,6 @@ class StarlightMcpPlugin : StarlightPlugin() {
         }
         addApi(McpApi())
 
-        EventHandler.on<Events.Log.Create>(scope) { McpRuntime.appLogs.add(log.toEntry()) }
         EventHandler.on<Events.Project.Compile>(scope) { setUpProject(project) }
         EventHandler.on<Events.Project.InfoUpdate>(scope) { onProjectInfoUpdated(project) }
         EventHandler.on<Events.Project.Delete>(scope) { McpRuntime.toolsets.close(projectId.toString()) }

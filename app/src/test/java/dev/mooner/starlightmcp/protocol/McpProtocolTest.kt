@@ -1,16 +1,16 @@
 package dev.mooner.starlightmcp.protocol
 
-import dev.mooner.starlightmcp.FakeHost
 import dev.mooner.starlightmcp.FakeOwner
-import dev.mooner.starlightmcp.FakeProject
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
 import dev.mooner.starlightmcp.builtin.BuiltinTools
-import dev.mooner.starlightmcp.builtin.LogEntry
 import dev.mooner.starlightmcp.server.ServerInfo
 import dev.mooner.starlightmcp.tool.ProjectToolsets
 import dev.mooner.starlightmcp.tool.ScriptToolRunner
 import dev.mooner.starlightmcp.tool.ToolHandler
 import dev.mooner.starlightmcp.tool.ToolRegistry
+import dev.mooner.starlightworkspace.DefaultWorkspace
+import dev.mooner.starlightworkspace.testing.FakeHost
+import dev.mooner.starlightworkspace.testing.FakeProject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,22 +41,23 @@ class McpProtocolTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val registry = ToolRegistry()
     private val toolsets = ProjectToolsets(registry) { ServerInfo(true, 8765, emptyList()) }
-    private val host = FakeHost()
+    private lateinit var host: FakeHost
     private var access = BuiltinAccess.READ_WRITE
     private lateinit var project: FakeProject
     private lateinit var protocol: McpProtocol
 
     @Before
     fun setUp() {
-        val dir = folder.newFolder("bot")
-        dir.resolve("index.js").writeText("// main")
+        host = FakeHost(folder.newFolder("projects"))
+        project = host.addProject("bot")
+        val dir = project.directory
+        dir.resolve("bot.js").writeText("// main")
         dir.resolve("lib").mkdirs()
         dir.resolve("lib/util.js").writeText("// util")
         folder.root.resolve("secret.txt").writeText("secret")
-        project = FakeProject("bot", dir)
-        host.projects += project
 
-        val builtins = BuiltinTools(host)
+        val workspace = DefaultWorkspace(host)
+        val builtins = BuiltinTools { workspace }
         protocol = McpProtocol(
             serverName = "starlight",
             serverVersion = "0.1.0",
@@ -142,7 +143,7 @@ class McpProtocolTest {
         }
         val write = call("starlight_write_file", """{"project":"bot","path":"../evil.js","content":"x"}""")
         assertTrue(write["isError"]!!.jsonPrimitive.content.toBoolean())
-        assertFalse(folder.root.resolve("evil.js").exists())
+        assertFalse(host.projectsDir.resolve("evil.js").exists())
     }
 
     @Test
@@ -152,7 +153,7 @@ class McpProtocolTest {
         assertTrue(text(ok).contains("compiling"))
         assertTrue(project.isCompiled)
 
-        project.compileError = "SyntaxError: line 3"
+        project.compileError = IllegalStateException("SyntaxError: line 3")
         val failed = call("starlight_compile_project", """{"project":"bot"}""")
         assertTrue(failed["isError"]!!.jsonPrimitive.content.toBoolean())
         assertTrue(text(failed).contains("SyntaxError: line 3"))
@@ -164,7 +165,7 @@ class McpProtocolTest {
             send("${message.sender ?: "?"}@${message.room ?: "?"}: ${message.text}")
             Thread.sleep(100)
             send("second")
-            project.logs += LogEntry("INFO", "bot", "handled", System.currentTimeMillis())
+            project.log("handled")
         }
         val result = call("starlight_send_debug_message", """{"project":"bot","message":"!ping","sender":"me","room":"r"}""")
         val json = Json.parseToJsonElement(text(result)).jsonObject

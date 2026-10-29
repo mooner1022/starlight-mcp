@@ -1,6 +1,5 @@
 package dev.mooner.starlightmcp
 
-import dev.mooner.starlightmcp.builtin.LogBuffer
 import dev.mooner.starlightmcp.server.McpHttpHandler
 import dev.mooner.starlightmcp.server.ServerInfo
 import dev.mooner.starlightmcp.server.ServerState
@@ -17,8 +16,6 @@ object McpRuntime {
     val registry = ToolRegistry()
 
     val toolsets = ProjectToolsets(registry, ::serverInfo)
-
-    val appLogs = LogBuffer()
 
     private val mState = MutableStateFlow<ServerState>(ServerState.Stopped)
     val state: StateFlow<ServerState> = mState.asStateFlow()
