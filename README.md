@@ -4,7 +4,8 @@ StarLight를 [Model Context Protocol](https://modelcontextprotocol.io) 서버로
 Claude Code 같은 MCP 클라이언트가 기기의 StarLight 프로젝트를 읽고, 수정하고, 컴파일할 수 있고,
 프로젝트(스크립트)가 직접 정의한 도구도 호출할 수 있습니다.
 
-**필수 의존성:** [Ktor 플러그인](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`). Ktor는 이 플러그인에 포함되지 않고 Ktor 플러그인에서 불러옵니다.
+**필수 의존성:** [Ktor](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`), [Workspace](https://github.com/mooner1022/starlight-workspace)(`workspace@1.0.0`).
+프로젝트 파일·컴파일·로그·디버그룸 작업은 Workspace 플러그인이 맡고, 같은 Workspace를 쓰는 IDE 등 다른 도구와 변경 사항을 공유합니다.
 
 ## 연결하기
 
@@ -29,12 +30,19 @@ claude mcp add --transport http starlight http://192.168.0.2:8765/mcp \
 | `starlight_list_projects` | 읽기 | 프로젝트 목록(언어, 메인 스크립트, 켜짐/컴파일 상태) |
 | `starlight_list_languages` | 읽기 | 설치된 스크립트 언어 |
 | `starlight_list_files` | 읽기 | 프로젝트 파일 목록(재귀) |
-| `starlight_read_file` | 읽기 | 파일 읽기(경로 생략 시 메인 스크립트, 최대 1MB) |
+| `starlight_read_file` | 읽기 | 파일 읽기(경로 생략 시 메인 스크립트, 최대 2MB). 결과에 내용 해시 포함 |
+| `starlight_search_files` | 읽기 | 프로젝트 안 텍스트·정규식 검색 |
+| `starlight_list_events` | 읽기 | 이벤트 목록(함수 이름, 인자), 프로젝트를 주면 수신 여부 |
+| `starlight_list_apis` | 읽기 | 스크립트 전역 API 목록 |
 | `starlight_get_project_logs` | 읽기 | 프로젝트 로그 |
-| `starlight_get_app_logs` | 읽기 | StarLight·플러그인 로그(플러그인이 켜진 이후 최근 500개) |
+| `starlight_get_app_logs` | 읽기 | StarLight·플러그인 로그(Workspace 플러그인이 켜진 이후 최근 1000개) |
 | `starlight_write_file` | 쓰기 | 파일 생성/덮어쓰기 |
+| `starlight_edit_file` | 쓰기 | 정확히 한 번 나오는 문자열 바꾸기 |
+| `starlight_rename_file` | 쓰기 | 파일 이름 바꾸기/이동 |
 | `starlight_delete_file` | 쓰기 | 파일 삭제(디렉터리 제외) |
-| `starlight_compile_project` | 쓰기 | 컴파일하고 그동안 쌓인 로그 반환 |
+| `starlight_compile_project` | 쓰기 | 컴파일하고 오류 위치(파일:줄:열)와 그동안 쌓인 로그 반환 |
+| `starlight_set_project_events` | 쓰기 | 프로젝트가 받을 이벤트 켜고 끄기 |
+| `starlight_create_project` | 쓰기 | 새 프로젝트 생성(기본 이벤트: 메시지 수신) |
 | `starlight_set_project_enabled` | 쓰기 | 프로젝트 켜기/끄기 |
 | `starlight_send_debug_message` | 쓰기 | 디버그룸에서 메시지를 보내고 봇의 답장·오류·로그 반환 |
 
@@ -43,7 +51,17 @@ claude mcp add --transport http starlight http://192.168.0.2:8765/mcp \
 스크립트가 방에 보낸 메시지(`event.room.send`)를 최대 `waitSeconds`초(기본 5초) 동안 모으며, 답장이 온 뒤 1초간 조용하면 바로 돌려줍니다.
 프로젝트가 컴파일되어 있고 메시지 이벤트가 허용되어 있어야 합니다. 앱의 디버그룸 화면에는 표시되지 않고, 레거시 이벤트는 호출하지 않습니다.
 
+쓰기 도구는 `expectedHash`(읽을 때 받은 해시)를 받을 수 있습니다. 그사이 앱이나 IDE에서 파일이 바뀌었으면 덮어쓰지 않고 실패합니다.
+결과는 텍스트와 함께 `structuredContent`(JSON)로도 돌려줍니다.
+
 프로젝트는 이름이나 id로 지정합니다. 파일 경로는 프로젝트 디렉터리 기준이며, 디렉터리 밖을 가리키는 경로는 거부됩니다.
+
+## 리소스와 프롬프트
+
+- **리소스**: `starlight://projects/{프로젝트}/files/{경로}`, `starlight://projects/{프로젝트}/logs`. 목록에는 각 프로젝트의 메인 스크립트와 로그가 나옵니다(Claude Code에서 `@`로 첨부).
+- **프롬프트**: `debug_project`(스크립트·이벤트·최근 로그를 모아 디버깅 시작), `new_bot`(설명한 봇을 만들고 컴파일·테스트까지). Claude Code에서는 `/mcp__starlight__debug_project`처럼 쓸 수 있습니다.
+
+내장 도구를 끄면 리소스와 프롬프트도 비활성화됩니다.
 
 ## 스크립트에서 도구 만들기
 
@@ -115,8 +133,10 @@ export function onMcpSetup(server) {
 ./gradlew :app:deployReleaseSlp -Pstarlight.device=<serial>
 ```
 
-Ktor는 `compileOnly`이며 런타임에는 Ktor 플러그인에서 불러옵니다. Ktor 버전을 올릴 때는
-`app/build.gradle`의 `ktorVersion`, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
+Ktor와 Workspace는 `compileOnly`이며 런타임에는 각 플러그인에서 불러옵니다.
+- Ktor 버전을 올릴 때는 `app/build.gradle`의 `ktorVersion`, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
+- `app/libs/workspace-api-<버전>.jar`는 Workspace 저장소의 `./gradlew :app:apiJar` 결과물입니다(`app/build/outputs/api/`).
+  StarLight는 의존성의 major.minor만 확인하므로, 이 플러그인은 켜질 때 `Workspaces.apiLevel`로 필요한 API 레벨을 확인합니다.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
 (`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`).

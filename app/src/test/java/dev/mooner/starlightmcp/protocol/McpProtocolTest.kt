@@ -2,6 +2,7 @@ package dev.mooner.starlightmcp.protocol
 
 import dev.mooner.starlightmcp.FakeOwner
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
+import dev.mooner.starlightmcp.builtin.BuiltinContext
 import dev.mooner.starlightmcp.builtin.BuiltinTools
 import dev.mooner.starlightmcp.server.ServerInfo
 import dev.mooner.starlightmcp.tool.ProjectToolsets
@@ -65,6 +66,7 @@ class McpProtocolTest {
             builtins = { builtins.tools(access) },
             registry = registry,
             runner = ScriptToolRunner(scope) { 1_000 },
+            context = { BuiltinContext { workspace }.takeIf { access != BuiltinAccess.OFF } },
         )
         toolsets.claim(FakeOwner("bot")).tool("echo", "Echoes", ToolHandler { args -> (args as Map<*, *>)["text"] })
     }
@@ -188,6 +190,79 @@ class McpProtocolTest {
         project.onMessage = null
         val notAllowed = call("starlight_send_debug_message", """{"project":"bot","message":"hi"}""")
         assertTrue(text(notAllowed).contains("doesn't receive messages"))
+    }
+
+    @Test
+    fun editsWithHashes() {
+        val read = call("starlight_read_file", """{"project":"bot","path":"lib/util.js"}""")
+        val hash = read["structuredContent"]!!.jsonObject["hash"]!!.jsonPrimitive.content
+        call("starlight_edit_file", """{"project":"bot","path":"lib/util.js","old":"util","new":"helpers","expectedHash":"$hash"}""")
+        assertEquals("// helpers", project.directory.resolve("lib/util.js").readText())
+
+        // The hash is stale now.
+        val stale = call("starlight_edit_file", """{"project":"bot","path":"lib/util.js","old":"helpers","new":"x","expectedHash":"$hash"}""")
+        assertTrue(stale["isError"]!!.jsonPrimitive.content.toBoolean())
+        assertTrue(text(stale).contains("read it again"))
+    }
+
+    @Test
+    fun searchesFiles() {
+        val result = call("starlight_search_files", """{"project":"bot","query":"UTIL"}""")
+        assertEquals("lib/util.js:1: // util", text(result))
+        assertEquals(1, result["structuredContent"]!!.jsonObject["matches"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun managesEventsAndProjects() {
+        val events = call("starlight_list_events", """{"project":"bot"}""")["structuredContent"]!!.jsonObject["events"]!!.jsonArray
+        val message = events.single { it.jsonObject["id"]!!.jsonPrimitive.content == FakeHost.MESSAGE_EVENT }.jsonObject
+        assertEquals("onMessage", message["function"]!!.jsonPrimitive.content)
+        assertEquals("true", message["allowed"]!!.jsonPrimitive.content)
+
+        call("starlight_set_project_events", """{"project":"bot","disallow":["${FakeHost.MESSAGE_EVENT}"],"allow":["starlight.project.compile"]}""")
+        assertEquals(setOf("starlight.project.compile"), project.allowedEvents())
+
+        assertTrue(text(call("starlight_create_project", """{"name":"echo","language":"JS_NEON"}""")).contains("echo.js"))
+        assertEquals(setOf(FakeHost.MESSAGE_EVENT), host.projects.single { it.name == "echo" }.allowedEvents())
+    }
+
+    @Test
+    fun reportsCompileErrorLocations() {
+        project.compileError = IllegalStateException("Compile failed", dev.mooner.neonjs.NeonSyntaxException("Unexpected token", 4, 2, "bot.js"))
+        val result = call("starlight_compile_project", """{"project":"bot"}""")
+        assertTrue(text(result).contains("(at bot.js:4:2)"))
+        assertEquals("4", result["structuredContent"]!!.jsonObject["errorLine"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun resources() {
+        val resources = request("resources/list", "{}")["resources"]!!.jsonArray.map { it.jsonObject["uri"]!!.jsonPrimitive.content }
+        assertEquals(listOf("starlight://projects/bot/files/bot.js", "starlight://projects/bot/logs"), resources)
+        assertEquals(2, request("resources/templates/list", "{}")["resourceTemplates"]!!.jsonArray.size)
+
+        val file = request("resources/read", """{"uri":"starlight://projects/bot/files/lib/util.js"}""")["contents"]!!.jsonArray.single().jsonObject
+        assertEquals("// util", file["text"]!!.jsonPrimitive.content)
+        assertEquals("text/javascript", file["mimeType"]!!.jsonPrimitive.content)
+
+        project.log("hello")
+        val logs = request("resources/read", """{"uri":"starlight://projects/bot/logs"}""")["contents"]!!.jsonArray.single().jsonObject
+        assertTrue(logs["text"]!!.jsonPrimitive.content.contains("hello"))
+
+        assertEquals(-32002, errorCode(handle("""{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"starlight://projects/bot/files/../secret.txt"}}""")))
+
+        access = BuiltinAccess.OFF
+        assertEquals(0, request("resources/list", "{}")["resources"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun prompts() {
+        val prompts = request("prompts/list", "{}")["prompts"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertEquals(listOf("debug_project", "new_bot"), prompts)
+        val debug = request("prompts/get", """{"name":"debug_project","arguments":{"project":"bot","problem":"no reply"}}""")
+        val text = debug["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonObject["text"]!!.jsonPrimitive.content
+        assertTrue(text.contains("// main"))
+        assertTrue(text.contains("The problem: no reply"))
+        assertEquals(JsonRpc.INVALID_PARAMS, errorCode(handle("""{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nope"}}""")))
     }
 
     @Test

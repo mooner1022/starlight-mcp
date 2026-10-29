@@ -1,11 +1,15 @@
 package dev.mooner.starlightmcp.protocol
 
+import dev.mooner.starlightmcp.builtin.BuiltinContext
 import dev.mooner.starlightmcp.tool.ScriptToolRunner
 import dev.mooner.starlightmcp.tool.ToolInvoker
 import dev.mooner.starlightmcp.tool.ToolRegistry
 import dev.mooner.starlightmcp.tool.ToolResult
 import dev.mooner.starlightmcp.tool.ToolSpec
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -24,7 +28,8 @@ class BuiltinTool(
 /**
  * Answers MCP messages. Stateless: nothing is kept between requests, so any request may come without `initialize`.
  *
- * Built-in tools come first; a project tool of the same name is never shown.
+ * Built-in tools come first; a project tool of the same name is never shown. Resources and prompts come from
+ * [context], which is null while the built-in tools are off.
  */
 class McpProtocol(
     private val serverName: String,
@@ -33,6 +38,7 @@ class McpProtocol(
     private val builtins: () -> List<BuiltinTool>,
     private val registry: ToolRegistry,
     private val runner: ScriptToolRunner,
+    private val context: () -> BuiltinContext? = { null },
     private val onToolCall: (name: String, project: String?, result: ToolResult, durationMillis: Long) -> Unit = { _, _, _, _ -> },
 ) {
 
@@ -72,8 +78,32 @@ class McpProtocol(
             "ping"       -> JsonObject(emptyMap())
             "tools/list" -> listTools()
             "tools/call" -> callTool(params)
+            "resources/list"           -> onContext { buildJsonObject { put("resources", it?.listResources() ?: EMPTY) } }
+            "resources/templates/list" -> onContext { buildJsonObject { put("resourceTemplates", it?.listResourceTemplates() ?: EMPTY) } }
+            "resources/read"           -> onContext { context ->
+                val uri = params.string("uri") ?: throw JsonRpcException(JsonRpc.INVALID_PARAMS, "Missing uri")
+                val contents = context?.readResource(uri)
+                    ?: throw JsonRpcException(JsonRpc.INVALID_PARAMS, "Resource not found: $uri")
+                buildJsonObject { put("contents", contents) }
+            }
+            "prompts/list" -> onContext { buildJsonObject { put("prompts", it?.listPrompts() ?: EMPTY) } }
+            "prompts/get"  -> onContext { context ->
+                val name = params.string("name") ?: throw JsonRpcException(JsonRpc.INVALID_PARAMS, "Missing prompt name")
+                val arguments = (params["arguments"] as? JsonObject)
+                    ?.mapNotNull { (key, value) -> (value as? JsonPrimitive)?.content?.let { key to it } }
+                    ?.toMap()
+                    .orEmpty()
+                context?.getPrompt(name, arguments) ?: throw JsonRpcException(JsonRpc.INVALID_PARAMS, "Unknown prompt: $name")
+            }
             else         -> throw JsonRpcException(JsonRpc.METHOD_NOT_FOUND, "Method not found: $method")
         }
+
+    /** Runs [block] off the request thread, as it reads files. */
+    private suspend fun onContext(block: (BuiltinContext?) -> JsonObject): JsonObject =
+        withContext(Dispatchers.IO) { block(context()) }
+
+    private fun JsonObject.string(key: String): String? =
+        (get(key) as? JsonPrimitive)?.takeIf { it.isString }?.content
 
     private fun initialize(params: JsonObject): JsonObject {
         val requested = (params["protocolVersion"] as? JsonPrimitive)?.content
@@ -81,6 +111,8 @@ class McpProtocol(
             put("protocolVersion", requested?.takeIf { it in SUPPORTED_VERSIONS } ?: SUPPORTED_VERSIONS.first())
             putJsonObject("capabilities") {
                 putJsonObject("tools") {}
+                putJsonObject("resources") {}
+                putJsonObject("prompts") {}
             }
             putJsonObject("serverInfo") {
                 put("name", serverName)
@@ -134,6 +166,8 @@ class McpProtocol(
 
     companion object {
         /** Newest first; a client asking for another version gets the newest. */
+        private val EMPTY = JsonArray(emptyList())
+
         val SUPPORTED_VERSIONS = listOf("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
     }
 }

@@ -22,6 +22,7 @@ import dev.mooner.starlight.plugincore.project.Project
 import dev.mooner.starlight.plugincore.project.event.ProjectEventManager
 import dev.mooner.starlightmcp.api.McpApi
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
+import dev.mooner.starlightmcp.builtin.BuiltinContext
 import dev.mooner.starlightmcp.builtin.BuiltinTools
 import dev.mooner.starlightmcp.event.McpSetupEvent
 import dev.mooner.starlightmcp.project.ProjectToolOwner
@@ -66,6 +67,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
     private var engine: HttpServerEngine? = null
 
     private val builtinTools = BuiltinTools { Workspaces.current }
+    private val builtinContext = BuiltinContext { Workspaces.current }
 
     @Volatile
     private var settings = ServerSettings()
@@ -207,6 +209,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
             builtins = { builtinTools.tools(builtinAccess) },
             registry = McpRuntime.registry,
             runner = ScriptToolRunner(scope) { toolTimeoutMillis },
+            context = { builtinContext.takeIf { builtinAccess != BuiltinAccess.OFF } },
             onToolCall = { name, project, result, durationMillis ->
                 if (settings.logCalls)
                     LOG.info {
@@ -450,6 +453,8 @@ class StarlightMcpPlugin : StarlightPlugin() {
             This server runs inside StarLight, an Android app that runs chatbot scripts called projects.
             Use starlight_list_projects to see the projects, and starlight_read_file / starlight_list_files to read their code.
             After changing a script with starlight_write_file, call starlight_compile_project to apply it and read the logs it returns.
+            Prefer starlight_edit_file for small changes; pass the hash from starlight_read_file as expectedHash so you don't overwrite edits made meanwhile in StarLight or its IDE.
+            A project only gets messages if it receives the message event: see starlight_list_events and starlight_set_project_events.
             starlight_send_debug_message sends a chat message to a project from its debug room and returns the bot's replies, to try a bot out.
             starlight_get_project_logs shows what a running project logged. Other tools are defined by the projects themselves.
         """.trimIndent()
