@@ -29,7 +29,9 @@ import org.junit.Before
 import org.junit.Test
 import java.net.HttpURLConnection
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URL
+import java.util.concurrent.CopyOnWriteArrayList
 
 /** MCP over HTTP to tools written in NeonJS, set up the way StarLight sets up its engine. */
 class ServerIntegrationTest {
@@ -39,6 +41,7 @@ class ServerIntegrationTest {
     private val port = ServerSocket(0).use { it.localPort }
     private val toolsets = ProjectToolsets(registry) { ServerInfo(true, port, listOf("http://127.0.0.1:$port/mcp")) }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val logged = CopyOnWriteArrayList<String>()
 
     @Volatile
     private var settings = ServerSettings(tokenHash = sha256Hex(TOKEN), requireToken = true)
@@ -58,7 +61,7 @@ class ServerIntegrationTest {
             registry = registry,
             runner = ScriptToolRunner(scope) { timeoutMillis },
         )
-        engine = HttpServerEngine(McpHttpHandler(protocol, { settings }) {})
+        engine = HttpServerEngine(McpHttpHandler(protocol, { settings }) { logged += it })
         engine.start("127.0.0.1", port)
 
         neon = NeonEngine.builder()
@@ -203,6 +206,28 @@ class ServerIntegrationTest {
             val json = json().jsonObject
             json["error"]?.let { throw AssertionError("Request failed: $it") }
             return json["result"]!!.jsonObject
+        }
+    }
+
+    @Test
+    fun requestCutOffQuietly() {
+        cutOffUpload("/mcp", mapOf("Authorization" to "Bearer $TOKEN"))
+        Thread.sleep(500)
+        assertEquals(emptyList<String>(), logged)
+    }
+
+    /** Sends [headers] and a part of the body it announces, then drops the connection. */
+    private fun cutOffUpload(path: String, headers: Map<String, String>) {
+        Socket("127.0.0.1", port).use { socket ->
+            val head = buildString {
+                append("POST $path HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n")
+                headers.forEach { (name, value) -> append("$name: $value\r\n") }
+                append("\r\n{\"text\":")
+            }
+            socket.getOutputStream().apply { write(head.toByteArray()); flush() }
+            Thread.sleep(200)
+            // Reset, not a polite close, the way a dropped network or killed process ends it.
+            socket.setSoLinger(true, 0)
         }
     }
 

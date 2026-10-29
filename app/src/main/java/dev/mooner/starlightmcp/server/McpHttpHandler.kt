@@ -16,6 +16,8 @@ import io.ktor.server.request.receiveChannel
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
+import io.ktor.util.cio.ChannelIOException
+import io.ktor.utils.io.ClosedByteChannelException
 import io.ktor.utils.io.readBuffer
 import kotlinx.coroutines.CancellationException
 import kotlinx.io.readByteArray
@@ -44,6 +46,9 @@ class McpHttpHandler(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
+            // The client went away, as when it gave up on a request.
+            if (isDisconnect(e))
+                return
             log("Failed to handle ${method.value} $path: $e")
             if (!call.response.isCommitted)
                 respondError(call, HttpStatusCode.InternalServerError)
@@ -88,6 +93,10 @@ class McpHttpHandler(
         else
             respondJson(call, response, HttpStatusCode.OK)
     }
+
+    /** Whether [e] means the connection broke while the request was read or the response written. */
+    private fun isDisconnect(e: Throwable): Boolean =
+        e is ChannelIOException || e is ClosedByteChannelException
 
     /** No Origin (not a browser), or a page served from this device or this server. */
     private fun isAllowedOrigin(call: ApplicationCall): Boolean {
