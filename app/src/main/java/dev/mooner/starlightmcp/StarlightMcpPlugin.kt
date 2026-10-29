@@ -366,7 +366,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     items = listOf(
                         tr("Off", "끔"),
                         tr("Read only (projects, files, logs)", "읽기 전용 (프로젝트, 파일, 로그)"),
-                        tr("Read & write (also edit files, compile, turn on/off)", "읽기·쓰기 (파일 수정, 컴파일, 켜기/끄기 포함)"),
+                        tr("Read & write (also edit files, compile, turn on/off, debug room)", "읽기·쓰기 (파일 수정, 컴파일, 켜기/끄기, 디버그룸 포함)"),
                     )
                     defaultIndex = BuiltinAccess.READ_WRITE.ordinal
                     icon = Icon.EDIT
@@ -442,6 +442,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
             This server runs inside StarLight, an Android app that runs chatbot scripts called projects.
             Use starlight_list_projects to see the projects, and starlight_read_file / starlight_list_files to read their code.
             After changing a script with starlight_write_file, call starlight_compile_project to apply it and read the logs it returns.
+            starlight_send_debug_message sends a chat message to a project from its debug room and returns the bot's replies, to try a bot out.
             starlight_get_project_logs shows what a running project logged. Other tools are defined by the projects themselves.
         """.trimIndent()
 

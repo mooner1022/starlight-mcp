@@ -5,6 +5,7 @@ import dev.mooner.starlightmcp.FakeOwner
 import dev.mooner.starlightmcp.FakeProject
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
 import dev.mooner.starlightmcp.builtin.BuiltinTools
+import dev.mooner.starlightmcp.builtin.LogEntry
 import dev.mooner.starlightmcp.server.ServerInfo
 import dev.mooner.starlightmcp.tool.ProjectToolsets
 import dev.mooner.starlightmcp.tool.ScriptToolRunner
@@ -155,6 +156,37 @@ class McpProtocolTest {
         val failed = call("starlight_compile_project", """{"project":"bot"}""")
         assertTrue(failed["isError"]!!.jsonPrimitive.content.toBoolean())
         assertTrue(text(failed).contains("SyntaxError: line 3"))
+    }
+
+    @Test
+    fun sendsDebugRoomMessages() {
+        project.onMessage = { message, send ->
+            send("${message.sender ?: "?"}@${message.room ?: "?"}: ${message.text}")
+            Thread.sleep(100)
+            send("second")
+            project.logs += LogEntry("INFO", "bot", "handled", System.currentTimeMillis())
+        }
+        val result = call("starlight_send_debug_message", """{"project":"bot","message":"!ping","sender":"me","room":"r"}""")
+        val json = Json.parseToJsonElement(text(result)).jsonObject
+        assertEquals(listOf("me@r: !ping", "second"), json["replies"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertTrue(json["logs"]!!.jsonPrimitive.content.contains("handled"))
+        assertFalse("isError" in result)
+    }
+
+    @Test
+    fun debugRoomFailures() {
+        project.onMessage = { _, _ -> throw IllegalStateException("ReferenceError: x") }
+        val failed = call("starlight_send_debug_message", """{"project":"bot","message":"hi"}""")
+        assertTrue(failed["isError"]!!.jsonPrimitive.content.toBoolean())
+        assertTrue(text(failed).contains("ReferenceError: x"))
+
+        project.onMessage = { _, _ -> }
+        val silent = call("starlight_send_debug_message", """{"project":"bot","message":"hi","waitSeconds":1}""")
+        assertTrue(text(silent).contains("No reply within 1s"))
+
+        project.onMessage = null
+        val notAllowed = call("starlight_send_debug_message", """{"project":"bot","message":"hi"}""")
+        assertTrue(text(notAllowed).contains("doesn't receive messages"))
     }
 
     @Test

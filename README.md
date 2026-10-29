@@ -36,6 +36,12 @@ claude mcp add --transport http starlight http://192.168.0.2:8765/mcp \
 | `starlight_delete_file` | 쓰기 | 파일 삭제(디렉터리 제외) |
 | `starlight_compile_project` | 쓰기 | 컴파일하고 그동안 쌓인 로그 반환 |
 | `starlight_set_project_enabled` | 쓰기 | 프로젝트 켜기/끄기 |
+| `starlight_send_debug_message` | 쓰기 | 디버그룸에서 메시지를 보내고 봇의 답장·오류·로그 반환 |
+
+`starlight_send_debug_message`는 앱의 디버그룸처럼 프로젝트의 메시지 이벤트(`onMessage`)를 호출합니다.
+보낸 사람·방 이름·단체방 여부는 인자로 바꿀 수 있고, 생략하면 StarLight 디버그룸 설정을 따릅니다.
+스크립트가 방에 보낸 메시지(`event.room.send`)를 최대 `waitSeconds`초(기본 5초) 동안 모으며, 답장이 온 뒤 1초간 조용하면 바로 돌려줍니다.
+프로젝트가 컴파일되어 있고 메시지 이벤트가 허용되어 있어야 합니다. 앱의 디버그룸 화면에는 표시되지 않고, 레거시 이벤트는 호출하지 않습니다.
 
 프로젝트는 이름이나 id로 지정합니다. 파일 경로는 프로젝트 디렉터리 기준이며, 디렉터리 밖을 가리키는 경로는 거부됩니다.
 

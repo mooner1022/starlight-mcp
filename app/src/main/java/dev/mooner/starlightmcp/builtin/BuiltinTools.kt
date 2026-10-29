@@ -9,7 +9,9 @@ import dev.mooner.starlightmcp.tool.McpServer
 import dev.mooner.starlightmcp.tool.ToolResult
 import dev.mooner.starlightmcp.tool.ToolSpec
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
@@ -27,7 +29,7 @@ import java.time.format.DateTimeFormatter
 enum class BuiltinAccess {
     OFF,
     READ_ONLY,
-    /** Also writes files, compiles and turns projects on and off. */
+    /** Also writes files, compiles, turns projects on and off and sends debug room messages. */
     READ_WRITE,
 }
 
@@ -203,7 +205,69 @@ class BuiltinTools(
             project.setEnabled(enabled)
             ToolResult.text("${project.name} is now ${if (project.isEnabled) "on" else "off"}")
         },
+        tool(
+            "send_debug_message",
+            "Sends a chat message to a project from its debug room, as if a user sent it, and returns what the bot " +
+                "replied to the room. The project must be compiled and receive the message event (onMessage). " +
+                "Sender, room and group chat default to StarLight's debug room settings.",
+            params = {
+                project()
+                string("message", "The message text.")
+                string("sender", "Name of the sender.", optional = true)
+                string("room", "Name of the chat room.", optional = true)
+                boolean("isGroupChat", "Whether the room is a group chat.", optional = true)
+                integer("waitSeconds", "How long to wait for replies (default $DEFAULT_REPLY_WAIT_SECONDS, at most $MAX_REPLY_WAIT_SECONDS).", optional = true)
+            },
+        ) { args ->
+            val project = findProject(args)
+            val message = DebugMessage(
+                text = args.requireString("message"),
+                sender = args.stringArg("sender"),
+                room = args.stringArg("room"),
+                isGroupChat = args.booleanArg("isGroupChat"),
+            )
+            val waitMillis = (args.intArg("waitSeconds") ?: DEFAULT_REPLY_WAIT_SECONDS).coerceIn(1, MAX_REPLY_WAIT_SECONDS) * 1000L
+            sendDebugMessage(project, message, waitMillis)
+        },
     )
+
+    /**
+     * Waits for the bot's replies until [waitMillis] passes, or until it has been quiet for a moment after
+     * replying or failing, since a bot may send several messages.
+     */
+    private suspend fun sendDebugMessage(project: ProjectHandle, message: DebugMessage, waitMillis: Long): ToolResult {
+        val events = Channel<Any>(Channel.UNLIMITED)
+        val startMillis = System.currentTimeMillis()
+        project.sendDebugMessage(message, onReply = { events.trySend(it) }, onError = { events.trySend(it) })
+
+        val replies = arrayListOf<String>()
+        var error: Throwable? = null
+        val deadline = startMillis + waitMillis
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0)
+                break
+            val isAnswered = replies.isNotEmpty() || error != null
+            val event = withTimeoutOrNull(if (isAnswered) minOf(remaining, REPLY_QUIET_MILLIS) else remaining) { events.receive() }
+                ?: break
+            when (event) {
+                is String    -> replies += event
+                is Throwable -> error = event
+            }
+        }
+        events.close()
+
+        val logs = project.logs().filter { it.millis >= startMillis }
+        val result = buildJsonObject {
+            putJsonArray("replies") { replies.forEach { add(it) } }
+            error?.let { put("error", it.message ?: it.toString()) }
+            if (replies.isEmpty() && error == null)
+                put("note", "No reply within ${waitMillis / 1000}s")
+            if (logs.isNotEmpty())
+                put("logs", formatLogs(logs, logs.size))
+        }
+        return ToolResult.text(result.toString(), isError = error != null)
+    }
 
     fun tools(access: BuiltinAccess): List<BuiltinTool> =
         when (access) {
@@ -297,6 +361,9 @@ class BuiltinTools(
         const val MAX_READ_BYTES = 1024L * 1024
         const val DEFAULT_LOG_LIMIT = 50
         const val MAX_LOG_LIMIT = 500
+        const val DEFAULT_REPLY_WAIT_SECONDS = 5
+        const val MAX_REPLY_WAIT_SECONDS = 60
+        const val REPLY_QUIET_MILLIS = 1_000L
 
         val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss.SSS").withZone(ZoneId.systemDefault())
     }

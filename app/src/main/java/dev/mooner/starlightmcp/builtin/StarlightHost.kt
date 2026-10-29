@@ -39,7 +39,22 @@ interface ProjectHandle {
 
     /** The project's logs, oldest first. */
     fun logs(): List<LogEntry>
+
+    /**
+     * Sends [message] to the project's message event (`onMessage`) from a debug room, as StarLight's debug room does.
+     * What the script sends to the room arrives at [onReply], and a failure of the event call at [onError]; both may
+     * come later and on other threads. Throws if the project can't receive it now.
+     */
+    fun sendDebugMessage(message: DebugMessage, onReply: (String) -> Unit, onError: (Throwable) -> Unit)
 }
+
+/** A debug room message; null fields take the debug room settings of StarLight. */
+class DebugMessage(
+    val text: String,
+    val sender: String? = null,
+    val room: String? = null,
+    val isGroupChat: Boolean? = null,
+)
 
 class LanguageInfo(
     val id: String,

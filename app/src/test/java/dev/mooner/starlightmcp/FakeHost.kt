@@ -1,5 +1,6 @@
 package dev.mooner.starlightmcp
 
+import dev.mooner.starlightmcp.builtin.DebugMessage
 import dev.mooner.starlightmcp.builtin.LanguageInfo
 import dev.mooner.starlightmcp.builtin.LogEntry
 import dev.mooner.starlightmcp.builtin.ProjectHandle
@@ -52,4 +53,19 @@ class FakeProject(
     }
 
     override fun logs(): List<LogEntry> = logs
+
+    /** The project's onMessage: gets the message and a way to send to the room. Null: the event is not allowed. */
+    var onMessage: ((message: DebugMessage, send: (String) -> Unit) -> Unit)? = null
+
+    override fun sendDebugMessage(message: DebugMessage, onReply: (String) -> Unit, onError: (Throwable) -> Unit) {
+        val onMessage = checkNotNull(onMessage) { "Project '$name' doesn't receive messages" }
+        // Scripts run on the project's own threads.
+        Thread {
+            try {
+                onMessage(message, onReply)
+            } catch (e: Throwable) {
+                onError(e)
+            }
+        }.start()
+    }
 }
