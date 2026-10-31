@@ -1,15 +1,21 @@
 package dev.mooner.starlightmcp
 
 import android.text.InputType
+import dev.mooner.configdsl.ConfigActionScope
 import dev.mooner.configdsl.ConfigStructure
 import dev.mooner.configdsl.Icon
 import dev.mooner.configdsl.config
+import dev.mooner.configdsl.options.InfoState
+import dev.mooner.configdsl.options.OptionStatus
 import dev.mooner.configdsl.options.button
+import dev.mooner.configdsl.options.choice
+import dev.mooner.configdsl.options.info
 import dev.mooner.configdsl.options.password
 import dev.mooner.configdsl.options.seekbar
-import dev.mooner.configdsl.options.spinner
 import dev.mooner.configdsl.options.string
+import dev.mooner.configdsl.options.textList
 import dev.mooner.configdsl.options.toggle
+import dev.mooner.configdsl.utils.PeekType
 import dev.mooner.starlight.plugincore.Session
 import dev.mooner.starlight.plugincore.config.data.ConfigData
 import dev.mooner.starlight.plugincore.event.EventHandler
@@ -42,7 +48,13 @@ import dev.mooner.starlightworkspace.Workspaces
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -59,6 +71,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
             contextClassLoader = StarlightMcpPlugin::class.java.classLoader
         }
     }
+    private val serverDispatcher = serverExecutor.asCoroutineDispatcher()
 
     /** Lives from onEnable to onDisable; runs event subscriptions and tool handlers. */
     private var pluginScope: CoroutineScope? = null
@@ -69,8 +82,12 @@ class StarlightMcpPlugin : StarlightPlugin() {
     private val builtinTools = BuiltinTools { Workspaces.current }
     private val builtinContext = BuiltinContext { Workspaces.current }
 
-    @Volatile
-    private var settings = ServerSettings()
+    private val settingsFlow = MutableStateFlow(ServerSettings())
+    private var settings: ServerSettings
+        get() = settingsFlow.value
+        set(value) {
+            settingsFlow.value = value
+        }
     @Volatile
     private var builtinAccess = BuiltinAccess.READ_WRITE
     @Volatile
@@ -138,7 +155,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
     private fun updateConfig(config: ConfigData) {
         with(config.category(CATEGORY_GENERAL)) {
             port = getString(CONF_PORT)?.toIntOrNull()?.takeIf(::isValidPort) ?: McpRuntime.DEFAULT_PORT
-            host = if (getInt(CONF_BIND, BIND_ALL) == BIND_LOCAL) LOCALHOST else ANY_HOST
+            host = if (bindKey(getString(CONF_BIND)) == BIND_LOCAL) LOCALHOST else ANY_HOST
             autoStart = getBoolean(CONF_AUTO_START, true)
         }
         McpRuntime.configuredPort = port
@@ -149,7 +166,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
             requireToken = security.getBoolean(CONF_REQUIRE_TOKEN, true),
             logCalls = config.category(CATEGORY_LOGGING).getBoolean(CONF_LOG_CALLS, false),
         )
-        builtinAccess = BuiltinAccess.entries.getOrElse(security.getInt(CONF_BUILTIN_ACCESS, BuiltinAccess.READ_WRITE.ordinal)) { BuiltinAccess.READ_WRITE }
+        builtinAccess = builtinAccessOf(security.getString(CONF_BUILTIN_ACCESS))
         toolTimeoutMillis = config.category(CATEGORY_TOOLS).getInt(CONF_TIMEOUT, DEF_TIMEOUT_SECONDS) * 1000L
     }
 
@@ -211,11 +228,10 @@ class StarlightMcpPlugin : StarlightPlugin() {
             runner = ScriptToolRunner(scope) { toolTimeoutMillis },
             context = { builtinContext.takeIf { builtinAccess != BuiltinAccess.OFF } },
             onToolCall = { name, project, result, durationMillis ->
+                val status = if (result.isError) "error" else "ok"
+                McpRuntime.recordCall("$status $name ${durationMillis}ms" + (project?.let { " [$it]" } ?: ""))
                 if (settings.logCalls)
-                    LOG.info {
-                        val status = if (result.isError) "error" else "ok"
-                        "tools/call $name -> $status (${durationMillis}ms)" + (project?.let { " [$it]" } ?: "")
-                    }
+                    LOG.info { "tools/call $name -> $status (${durationMillis}ms)" + (project?.let { " [$it]" } ?: "") }
             },
         )
         val engine = HttpServerEngine(McpHttpHandler(protocol, { settings }) { message -> LOG.info { message } })
@@ -252,6 +268,43 @@ class StarlightMcpPlugin : StarlightPlugin() {
         startServer()
     }
 
+    /** Runs [block] on [serverExecutor], then tells how the server ended up. */
+    private suspend fun ConfigActionScope.changeServer(block: () -> Unit) {
+        withContext(serverDispatcher) { block() }
+        when (val state = McpRuntime.state.value) {
+            is ServerState.Running -> peek(tr("Server is running", "서버가 작동 중이에요"), PeekType.SUCCESS)
+            is ServerState.Failed  -> peek(state.reason, PeekType.ERROR)
+            else                   -> peek(tr("Server stopped", "서버를 중지했어요"))
+        }
+    }
+
+    /** The status row: whether the server runs, where, and whether it can accept anything. */
+    private fun statusFlow(): Flow<InfoState> =
+        combine(McpRuntime.state, settingsFlow) { state, settings ->
+            when (state) {
+                is ServerState.Running ->
+                    if (settings.requireToken && settings.tokenHash == null) InfoState(tr("No token", "토큰 없음"), OptionStatus.WARNING)
+                    else InfoState(tr("Running", "작동 중"), OptionStatus.OK)
+                ServerState.Starting   -> InfoState(null, OptionStatus.LOADING)
+                ServerState.Stopped    -> InfoState(tr("Stopped", "중지됨"))
+                is ServerState.Failed  -> InfoState(tr("Failed", "오류"), OptionStatus.ERROR)
+            }
+        }
+
+    private fun statusDescriptionFlow(): Flow<String?> =
+        combine(McpRuntime.state, settingsFlow) { state, settings ->
+            when (state) {
+                is ServerState.Running ->
+                    if (settings.requireToken && settings.tokenHash == null)
+                        tr("Access token is not set: every request is rejected.", "접근 토큰이 설정되지 않아 모든 요청이 거부돼요.")
+                    else
+                        McpRuntime.serverInfo().urls.joinToString("\n") + "\n" + tr("Tap to copy the address.", "눌러서 주소를 복사해요.")
+                ServerState.Starting   -> tr("Starting...", "시작 중...")
+                ServerState.Stopped    -> null
+                is ServerState.Failed  -> state.reason
+            }
+        }
+
     // ------------------------------------------------------------------ config
 
     override fun getConfigStructure(): ConfigStructure = config {
@@ -273,14 +326,12 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     icon = Icon.LINK
                     iconTintColor = color { COLOR_ICON }
                 }
-                spinner {
+                choice {
                     id = CONF_BIND
                     title = tr("Accept connections from", "접속 허용 범위")
-                    items = listOf(
-                        tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"),
-                        tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"),
-                    )
-                    defaultIndex = BIND_ALL
+                    option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
+                    option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
+                    defaultKey = BIND_ALL
                     icon = Icon.CLOUD
                     iconTintColor = color { COLOR_ICON }
                 }
@@ -299,37 +350,23 @@ class StarlightMcpPlugin : StarlightPlugin() {
             title = tr("Control", "제어")
             textColor = color { COLOR_SUB_TITLE }
             items {
-                button {
-                    val state = McpRuntime.state.value
-                    id = "state_indicator"
-                    title = when (state) {
-                        is ServerState.Running -> tr("Running on ${McpRuntime.serverInfo().urls.joinToString()}", "작동 중: ${McpRuntime.serverInfo().urls.joinToString()}")
-                        ServerState.Starting   -> tr("Starting...", "시작 중...")
-                        ServerState.Stopped    -> tr("Stopped", "중지됨")
-                        is ServerState.Failed  -> tr("Failed: ${state.reason}", "오류: ${state.reason}")
-                    }
-                    description = if (state is ServerState.Running) tr("Tap to copy the address.", "눌러서 주소를 복사합니다.") else null
+                info {
+                    id = "status"
+                    title = tr("Server", "서버")
                     icon = Icon.POWER
-                    iconTintColor = color {
-                        when (state) {
-                            is ServerState.Running -> "#4ADE80"
-                            ServerState.Starting   -> "#F2B05E"
-                            else                   -> "#FF6188"
-                        }
-                    }
+                    bind(statusFlow())
+                    bindDescription(statusDescriptionFlow())
                     setOnClickListener { view -> copyServerUrl(view.context) }
                 }
                 button {
-                    val action = if (isRunning) tr("Stop", "중지") else tr("Start", "시작")
                     id = "toggle_server"
-                    title = tr("$action server", "서버 $action")
+                    title = if (isRunning) tr("Stop server", "서버 중지") else tr("Start server", "서버 시작")
+                    bindTitle(McpRuntime.state.map { state ->
+                        if (state is ServerState.Running) tr("Stop server", "서버 중지") else tr("Start server", "서버 시작")
+                    })
                     icon = Icon.POWER
-                    iconTintColor = color { "#FF6188" }
-                    setOnClickListener { _ ->
-                        LOG.info(LogData.FLAG_NOTIFY) { tr("$action server...", "서버 $action 중...") }
-                        serverExecutor.execute {
-                            if (engine != null) stopServer() else startServer()
-                        }
+                    action {
+                        changeServer { if (engine != null) stopServer() else startServer() }
                     }
                 }
                 button {
@@ -337,11 +374,19 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     title = tr("Restart server", "서버 재시작")
                     description = tr("Tools registered by projects are kept.", "프로젝트가 등록한 도구는 유지됩니다.")
                     icon = Icon.REFRESH
-                    iconTintColor = color { "#FF6188" }
-                    setOnClickListener { _ ->
-                        LOG.info(LogData.FLAG_NOTIFY) { tr("Restarting server...", "서버 재시작 중...") }
-                        serverExecutor.execute(::restartServer)
+                    action {
+                        changeServer(::restartServer)
                     }
+                }
+                textList {
+                    id = "recent_calls"
+                    title = tr("Recent tool calls", "최근 도구 호출")
+                    icon = Icon.LIST_BULLETED
+                    monospace = true
+                    copyable = true
+                    emptyText = tr("No tool calls yet", "아직 도구 호출이 없어요")
+                    lines = McpRuntime.recentCalls.value
+                    bind(McpRuntime.recentCalls)
                 }
             }
         }
@@ -369,17 +414,15 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
                     icon = Icon.KEY
                     iconTintColor = color { COLOR_ICON }
-                    dependency = CONF_REQUIRE_TOKEN
+                    visibleWhen(CONF_REQUIRE_TOKEN, true)
                 }
-                spinner {
+                choice {
                     id = CONF_BUILTIN_ACCESS
                     title = tr("Built-in StarLight tools", "StarLight 내장 도구")
-                    items = listOf(
-                        tr("Off", "끔"),
-                        tr("Read only (projects, files, logs)", "읽기 전용 (프로젝트, 파일, 로그)"),
-                        tr("Read & write (also edit files, compile, turn on/off, debug room)", "읽기·쓰기 (파일 수정, 컴파일, 켜기/끄기, 디버그룸 포함)"),
-                    )
-                    defaultIndex = BuiltinAccess.READ_WRITE.ordinal
+                    option(BuiltinAccess.OFF.key, tr("Off", "끔"))
+                    option(BuiltinAccess.READ_ONLY.key, tr("Read only (projects, files, logs)", "읽기 전용 (프로젝트, 파일, 로그)"))
+                    option(BuiltinAccess.READ_WRITE.key, tr("Read & write (also edit files, compile, turn on/off, debug room)", "읽기·쓰기 (파일 수정, 컴파일, 켜기/끄기, 디버그룸 포함)"))
+                    defaultKey = BuiltinAccess.READ_WRITE.key
                     icon = Icon.EDIT
                     iconTintColor = color { COLOR_ICON }
                 }
@@ -435,8 +478,8 @@ class StarlightMcpPlugin : StarlightPlugin() {
         const val CONF_TIMEOUT        = "tool_timeout"
         const val CONF_LOG_CALLS      = "log_calls"
 
-        const val BIND_ALL   = 0
-        const val BIND_LOCAL = 1
+        const val BIND_ALL   = "all"
+        const val BIND_LOCAL = "local"
 
         // Ports below 1024 need root on Android.
         const val MIN_PORT = 1024
@@ -465,5 +508,18 @@ class StarlightMcpPlugin : StarlightPlugin() {
 
         fun isValidPort(port: Int): Boolean =
             port in MIN_PORT..MAX_PORT
+
+        /** The saved choice; before 0.3.0 it was the spinner's index. */
+        fun bindKey(saved: String?): String =
+            if (saved == BIND_LOCAL || saved == "1") BIND_LOCAL else BIND_ALL
+
+        /** The saved choice; before 0.3.0 it was the spinner's index. */
+        fun builtinAccessOf(saved: String?): BuiltinAccess =
+            BuiltinAccess.entries.firstOrNull { it.key == saved }
+                ?: saved?.toIntOrNull()?.let(BuiltinAccess.entries::getOrNull)
+                ?: BuiltinAccess.READ_WRITE
+
+        val BuiltinAccess.key: String
+            get() = name.lowercase()
     }
 }

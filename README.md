@@ -4,13 +4,15 @@ StarLight를 [Model Context Protocol](https://modelcontextprotocol.io) 서버로
 Claude Code 같은 MCP 클라이언트가 기기의 StarLight 프로젝트를 읽고, 수정하고, 컴파일할 수 있고,
 프로젝트(스크립트)가 직접 정의한 도구도 호출할 수 있습니다.
 
+**StarLight nightly(PluginCore 1.0.0) 이상이 필요합니다.** 정식 앱(0.3.4b)에서는 불러오지 않습니다.
+
 **필수 의존성:** [Ktor](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`), [Workspace](https://github.com/mooner1022/starlight-workspace)(`workspace@1.0.0`).
 프로젝트 파일·컴파일·로그·디버그룸 작업은 Workspace 플러그인이 맡고, 같은 Workspace를 쓰는 IDE 등 다른 도구와 변경 사항을 공유합니다.
 
 ## 연결하기
 
 1. 플러그인 설정 > 보안에서 **접근 토큰**을 지정합니다(8자 이상). 토큰이 없으면 모든 요청이 거부됩니다.
-2. 제어 > 상태를 눌러 주소(`http://<기기 IP>:8765/mcp`)를 복사합니다.
+2. 제어 > 서버 상태를 눌러 주소(`http://<기기 IP>:8765/mcp`)를 복사합니다.
 3. 클라이언트에 등록합니다.
 
 ```sh
@@ -120,8 +122,8 @@ export function onMcpSetup(server) {
 ## 설정
 
 - **일반**: 포트(1024–65535, 기본 8765), 접속 허용 범위(모든 네트워크 / 이 기기에서만), 자동 시작
-- **제어**: 상태 표시(눌러서 주소 복사), 시작/중지, 재시작
-- **보안**: 접근 토큰 필수 여부와 토큰, 내장 도구 범위
+- **제어**: 서버 상태와 접속 주소(실시간, 눌러서 주소 복사), 시작/중지, 재시작, 최근 도구 호출 목록
+- **보안**: 접근 토큰 필수 여부와 토큰(필수일 때만 표시), 내장 도구 범위
 - **프로젝트 도구**: 도구 제한 시간
 - **로그**: 모든 도구 호출 로그 표시
 
@@ -139,6 +141,6 @@ Ktor와 Workspace는 `compileOnly`이며 런타임에는 각 플러그인에서 
   StarLight는 의존성의 major.minor만 확인하므로, 이 플러그인은 켜질 때 `Workspaces.apiLevel`로 필요한 API 레벨을 확인합니다.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
-(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`).
+(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치의 PluginCore 1.0.0).
 
 `assets/` 아래 파일(아이콘 등)을 바꾸면 `starlight.json`의 `assetRevision`을 올려야 합니다.

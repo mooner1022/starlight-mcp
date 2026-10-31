@@ -9,6 +9,7 @@ import dev.mooner.starlightmcp.utils.serverUrls
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /** State shared by the plugin, the scripts' servers and the API. */
 object McpRuntime {
@@ -25,8 +26,16 @@ object McpRuntime {
     var configuredPort: Int = DEFAULT_PORT
         internal set
 
+    private val mRecentCalls = MutableStateFlow<List<String>>(emptyList())
+    /** The last tool calls, newest first, as shown in the settings. */
+    val recentCalls: StateFlow<List<String>> = mRecentCalls.asStateFlow()
+
     internal fun setState(state: ServerState) {
         mState.value = state
+    }
+
+    internal fun recordCall(line: String) {
+        mRecentCalls.update { calls -> (listOf(line) + calls).take(RECENT_CALLS) }
     }
 
     fun serverInfo(): ServerInfo =
@@ -36,4 +45,5 @@ object McpRuntime {
         }
 
     const val DEFAULT_PORT = 8765
+    private const val RECENT_CALLS = 20
 }
