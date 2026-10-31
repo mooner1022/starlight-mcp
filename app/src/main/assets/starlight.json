@@ -3,7 +3,7 @@
   "name":"MCP Server",
   "category":"devtools",
   "main_class":"dev.mooner.starlightmcp.StarlightMcpPlugin",
-  "version":"0.2.1",
+  "version":"0.3.0",
   "api_version":"1.0.0",
   "assetRevision":1,
   "dependency":["ktor@3.6.0", "workspace@1.0.0"],
