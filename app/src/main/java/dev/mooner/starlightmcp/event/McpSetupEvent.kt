@@ -6,7 +6,25 @@ import dev.mooner.starlight.plugincore.translation.Locale
 import dev.mooner.starlight.plugincore.translation.translate
 import dev.mooner.starlightmcp.tool.McpServer
 
-/** Called after each compilation of a project, with the project's MCP server. */
+/**
+ * The project was compiled: register the tools MCP clients (AI assistants) can call.
+ *
+ * Called once after each compilation. A project that is already compiled gets it once when the MCP plugin starts,
+ * or when the project starts receiving this event. The tools of the previous compilation are removed before it is called. The MCP plugin's server serves the
+ * tools while it runs; tool names starting with `starlight_` are reserved for its built-in tools.
+ *
+ * ```js
+ * export function onMcpSetup(server) {
+ *     server.tool("greet", { description: "Greets someone", inputSchema: { name: "string" } },
+ *         (args) => `Hello, ${args.name}!`);
+ * }
+ * ```
+ *
+ * In NeonJS the function must be exported.
+ *
+ * @param server The project's tools, valid until the next compilation.
+ * @see guide:tools
+ */
 class McpSetupEvent : ProjectEvent() {
 
     override val functionName: String = FUNCTION_NAME
@@ -16,6 +34,11 @@ class McpSetupEvent : ProjectEvent() {
     override val name: String = translate {
         Locale.ENGLISH { "MCP tool setup" }
         Locale.KOREAN  { "MCP 도구 설정" }
+    }
+
+    override val description: String = translate {
+        Locale.ENGLISH { "After the project is compiled, to register the tools MCP clients can call" }
+        Locale.KOREAN  { "프로젝트가 컴파일된 뒤, MCP 클라이언트가 호출할 도구를 등록할 때" }
     }
 
     override val functionComment: String = translate {

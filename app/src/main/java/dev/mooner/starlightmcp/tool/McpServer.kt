@@ -12,7 +12,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 /**
- * The MCP tools of one project, given to scripts by the `onMcpSetup(server)` event and as the `Mcp` API.
+ * The project's tools on the MCP plugin's server, which MCP clients (AI assistants) call; the global `Mcp`, and the
+ * argument of `onMcpSetup(server)`.
  *
  * ```js
  * export function onMcpSetup(server) {
@@ -20,8 +21,13 @@ import kotlinx.serialization.json.putJsonObject
  *         (args) => `Hello, ${args.name}!`);
  * }
  * ```
+ *
+ * An instance belongs to one compilation of the project. Once the project is compiled again, changes made through an
+ * older instance are ignored, with an error in the project log.
+ *
+ * @see guide:tools
  */
-class McpServer(
+class McpServer internal constructor(
     private val owner: ToolOwner,
     private val gen: Long,
     private val registry: ToolRegistry,
@@ -29,18 +35,34 @@ class McpServer(
     private val serverInfo: () -> ServerInfo,
 ) {
 
-    /** Identifies the compilation this server belongs to. */
+    /**
+     * Identifies the compilation this server belongs to.
+     *
+     * @suppress
+     */
     val generation: Long
         get() = gen
 
     /**
-     * Registers a tool.
+     * Registers a tool that MCP clients can call.
      *
-     * [options] is the description, or an object with `description`, `title`, `inputSchema` and `annotations`.
      * `inputSchema` is a JSON Schema of an object, or in short a map of argument names to types:
-     * `{ city: "string", days: "integer?" }` (a trailing `?` makes the argument optional; values may also be schemas).
+     * `{ city: "string", days: "integer?" }`. A trailing `?` makes an argument optional, and a value may be a schema
+     * instead of a type name. The types are `string`, `number`, `integer`, `boolean`, `object`, `array` and `null`.
      *
-     * [handler] gets the arguments as an object and returns the result; see [ScriptFunction].
+     * The handler runs on the project's threads, within the time limit set in the MCP plugin. It returns text for
+     * strings, numbers and booleans, JSON text for other objects and arrays, or an object with a `content` array to
+     * send an MCP tool result as is. In NeonJS it may return a promise. Throwing makes the call fail with the error
+     * message.
+     *
+     * If another project registered a tool of the same name first, clients keep seeing that one, and an error goes to
+     * the project log. This one is kept and shows once the other is removed.
+     *
+     * @param name The tool's name. Names starting with `starlight_` are reserved.
+     * @param options The description, or an object with `description`, `title`, `inputSchema` and `annotations`.
+     * @param handler `(args) => result`, where `args` holds the arguments the client sent.
+     * @return This server, for chaining.
+     * @throws IllegalArgumentException If the name is reserved, or [options] or its `inputSchema` is malformed.
      */
     fun tool(name: String, options: Any?, handler: Any?): McpServer {
         if (!isCurrent()) {
@@ -55,6 +77,11 @@ class McpServer(
         return this
     }
 
+    /**
+     * Removes one of this project's tools.
+     *
+     * @return Whether there was such a tool.
+     */
     fun remove(name: String): Boolean =
         isCurrent() && registry.remove(owner.id, name)
 
@@ -64,29 +91,32 @@ class McpServer(
             registry.removeOwner(owner.id)
     }
 
-    /** Names of this project's tools. */
+    /** The names of this project's tools. */
     fun getTools(): List<String> =
         registry.toolsOf(owner.id).map { it.spec.name }
 
+    /** Whether the MCP plugin's server is running, so clients can call the tools now. */
     fun isRunning(): Boolean =
         serverInfo().isRunning
 
+    /** The port the server listens on, or is set to listen on while it is stopped. */
     fun getPort(): Int =
         serverInfo().port
 
-    /** Addresses clients connect to, such as `http://192.168.0.2:8765/mcp`. */
+    /** The addresses clients connect to, such as `http://192.168.0.2:8765/mcp`; empty while the server is stopped. */
     fun getUrls(): List<String> =
         serverInfo().urls
 
     private fun isCurrent(): Boolean =
         toolsets.isCurrent(owner.id, gen)
 
+    /** @suppress */
     override fun toString(): String =
         "McpServer[${owner.name}]"
 
     companion object {
 
-        /** Prefix of the built-in tools. */
+        /** The prefix of the built-in tools, which script tools can't use. */
         const val RESERVED_PREFIX = "starlight_"
 
         private val TYPES = setOf("string", "number", "integer", "boolean", "object", "array", "null")

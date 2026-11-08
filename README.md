@@ -7,11 +7,13 @@ Claude Code 같은 MCP 클라이언트가 기기의 StarLight 프로젝트를 �
 **StarLight nightly(PluginCore 1.0.0) 이상이 필요합니다.** 정식 앱(0.3.4b)에서는 불러오지 않습니다.
 
 **필수 의존성:** [Ktor](https://github.com/mooner1022/starlight-ktor)(`ktor@3.6.0`), [Workspace](https://github.com/mooner1022/starlight-workspace)(`workspace@1.0.0`).
+Ktor 플러그인은 3.6.2 이상이어야 합니다(서버를 여는 `KtorServers`가 3.6.2에 들어 있습니다).
 프로젝트 파일·컴파일·로그·디버그룸 작업은 Workspace 플러그인이 맡고, 같은 Workspace를 쓰는 IDE 등 다른 도구와 변경 사항을 공유합니다.
 
 ## 연결하기
 
-1. 플러그인 설정 > 보안에서 **접근 토큰**을 지정합니다(8자 이상). 토큰이 없으면 모든 요청이 거부됩니다.
+1. **접근 토큰**을 지정합니다(8자 이상). 토큰이 없으면 StarLight가 시작할 때 초기 설정 창에서 토큰과 접속 허용 범위를 묻습니다.
+   플러그인 목록의 초기 설정이나 플러그인 설정 > 보안에서도 바꿀 수 있습니다. 토큰이 없으면 모든 요청이 거부됩니다.
 2. 제어 > 서버 상태를 눌러 주소(`http://<기기 IP>:8765/mcp`)를 복사합니다.
 3. 클라이언트에 등록합니다.
 
@@ -108,8 +110,16 @@ export function onMcpSetup(server) {
 
 - **NeonJS (주 대상)**: `onMcpSetup` 이벤트로 사용합니다. 핸들러는 프로젝트의 NeonJS 컨텍스트에서 실행되며,
   인자는 스크립트의 `JSON.parse`로 만든 진짜 JS 객체라 배열 메서드(`map`, `reduce` 등)를 그대로 쓸 수 있습니다. async 핸들러를 지원합니다.
-- **Rhino (레거시)**: 같은 이벤트를 쓸 수 있고, 전역 `Mcp` API로 최상위 코드에서 바로 등록할 수도 있습니다.
-  인자는 Java `Map`/`List`로 전달됩니다(`args.get("city")`).
+- **Rhino (레거시)**: 같은 이벤트를 쓸 수 있습니다. 인자는 Java `Map`/`List`로 전달됩니다(`args.get("city")`).
+
+두 엔진 모두 전역 `Mcp`로 최상위 코드에서 바로 등록할 수도 있습니다. 어느 API 레벨에도 속하지 않은 플러그인 Api는 모든 프로젝트에 주어집니다.
+
+## StarLight AI
+
+StarLight AI(PluginCore 1.1.0 이상)가 이 플러그인의 API를 설명할 수 있도록 KDoc과 가이드를 패키지에 넣습니다.
+- KSP(`com.google.devtools.ksp`, AGP 8.12 이상 필요)를 적용하면 slplugin 0.5.0이 KDoc을 `starlight/agent/mcp.api.json`으로 뽑습니다.
+- 가이드는 `app/src/main/assets/agent/guides/`에 있습니다(`mcp:tools`).
+- 스크립트가 받는 타입(`McpServer`)의 KDoc은 앱 저장소 `docs/agent-docs.md` §3 규칙을 따릅니다. 스크립트가 만들 일이 없는 생성자는 `internal`로 두어 문서에서 빠지게 합니다.
 
 ## 보안
 
@@ -139,8 +149,14 @@ Ktor와 Workspace는 `compileOnly`이며 런타임에는 각 플러그인에서 
 - Ktor 버전을 올릴 때는 `app/build.gradle`의 `ktorVersion`, `starlight.json`의 `dependency`, Ktor 플러그인 버전을 함께 맞추세요.
 - `app/libs/workspace-api-<버전>.jar`는 Workspace 저장소의 `./gradlew :app:apiJar` 결과물입니다(`app/build/outputs/api/`).
   StarLight는 의존성의 major.minor만 확인하므로, 이 플러그인은 켜질 때 `Workspaces.apiLevel`로 필요한 API 레벨을 확인합니다.
+- `app/libs/ktor-api-<버전>.jar`는 Ktor 저장소의 `./gradlew :app:apiJar` 결과물입니다. 서버는 그 안의 `KtorServers`로 열고,
+  켜질 때 `KtorServers.apiLevel`을 같은 방식으로 확인합니다.
 
 `app/libs`의 `PluginCore-release.aar`, `ConfigDSL-release.aar`은 StarLight 저장소에서 빌드한 것입니다
-(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치의 PluginCore 1.0.0).
+(`./gradlew :PluginCore:assembleRelease :ConfigDSL:assembleRelease`, nightly 브랜치).
+- PluginCore는 1.1.0(full 플레이버)입니다. 이벤트의 `description`을 오버라이드하려고 올렸고, 새 멤버를 호출하지는 않으므로
+  `api_version`은 1.0.0 그대로 둡니다. PluginCore 1.0.0 앱에서도 로드되며, `description`이 쓰이지 않을 뿐입니다.
+  slplugin(0.4.0 이상)이 빌드할 때 코드가 쓰는 PluginCore API를 `api_version`과 대조합니다.
+- ConfigDSL은 PluginCore 1.0.0 때 빌드한 것을 그대로 둡니다. 버전 표가 없어서 새 멤버를 써도 빌드 단계에서 알 수 없기 때문입니다.
 
 `assets/` 아래 파일(아이콘 등)을 바꾸면 `starlight.json`의 `assetRevision`을 올려야 합니다.

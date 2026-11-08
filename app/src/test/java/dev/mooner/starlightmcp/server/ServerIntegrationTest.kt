@@ -4,6 +4,7 @@ import dev.mooner.neonjs.HostAccess
 import dev.mooner.neonjs.NeonContext
 import dev.mooner.neonjs.NeonEngine
 import dev.mooner.neonjs.SandboxPolicy
+import dev.mooner.starlightktor.server.KtorServer
 import dev.mooner.starlightmcp.FakeOwner
 import dev.mooner.starlightmcp.protocol.McpProtocol
 import dev.mooner.starlightmcp.tool.ProjectToolsets
@@ -48,7 +49,7 @@ class ServerIntegrationTest {
     @Volatile
     private var timeoutMillis = 2_000L
 
-    private lateinit var engine: HttpServerEngine
+    private lateinit var engine: KtorServer
     private lateinit var neon: NeonContext
 
     @Before
@@ -61,8 +62,7 @@ class ServerIntegrationTest {
             registry = registry,
             runner = ScriptToolRunner(scope) { timeoutMillis },
         )
-        engine = HttpServerEngine(McpHttpHandler(protocol, { settings }) { logged += it })
-        engine.start("127.0.0.1", port)
+        engine = McpHttpHandler(protocol, { settings }) { logged += it }.serve("127.0.0.1", port)
 
         neon = NeonEngine.builder()
             .sandbox(SandboxPolicy.builder().exposeJavaGlobal(true).build())

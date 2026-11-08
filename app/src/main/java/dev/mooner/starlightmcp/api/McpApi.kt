@@ -9,11 +9,10 @@ import dev.mooner.starlightmcp.project.ProjectToolOwner
 import dev.mooner.starlightmcp.tool.McpServer
 
 /**
- * The project's MCP server as the global `Mcp`, for registering tools from top-level code.
+ * Registers the project's MCP server as the global `Mcp`, for registering tools from top-level code.
  *
  * StarLight creates the instance while compiling the project, which starts the server's generation; the setup event
- * fired after the compilation gets the same server. NeonJS doesn't expose plugin APIs yet, so for now only Rhino
- * scripts see this global; the setup event works in both.
+ * fired after the compilation gets the same server.
  */
 class McpApi : Api<McpServer>() {
 

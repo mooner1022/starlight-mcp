@@ -1,7 +1,9 @@
 package dev.mooner.starlightmcp
 
+import android.graphics.Color
 import android.text.InputType
 import dev.mooner.configdsl.ConfigActionScope
+import dev.mooner.configdsl.ConfigItemBuilder
 import dev.mooner.configdsl.ConfigStructure
 import dev.mooner.configdsl.Icon
 import dev.mooner.configdsl.config
@@ -26,6 +28,9 @@ import dev.mooner.starlight.plugincore.logger.LoggerFactory
 import dev.mooner.starlight.plugincore.plugin.StarlightPlugin
 import dev.mooner.starlight.plugincore.project.Project
 import dev.mooner.starlight.plugincore.project.event.ProjectEventManager
+import dev.mooner.starlightktor.server.KtorServer
+import dev.mooner.starlightktor.server.KtorServers
+import dev.mooner.starlightktor.server.PortInUseException
 import dev.mooner.starlightmcp.api.McpApi
 import dev.mooner.starlightmcp.builtin.BuiltinAccess
 import dev.mooner.starlightmcp.builtin.BuiltinContext
@@ -33,10 +38,11 @@ import dev.mooner.starlightmcp.builtin.BuiltinTools
 import dev.mooner.starlightmcp.event.McpSetupEvent
 import dev.mooner.starlightmcp.project.ProjectToolOwner
 import dev.mooner.starlightmcp.protocol.McpProtocol
-import dev.mooner.starlightmcp.server.HttpServerEngine
 import dev.mooner.starlightmcp.server.McpHttpHandler
 import dev.mooner.starlightmcp.server.ServerSettings
 import dev.mooner.starlightmcp.server.ServerState
+import dev.mooner.starlightmcp.server.ktorApiLevel
+import dev.mooner.starlightmcp.server.serve
 import dev.mooner.starlightmcp.tool.McpServer
 import dev.mooner.starlightmcp.tool.ScriptToolRunner
 import dev.mooner.starlightmcp.utils.ANY_HOST
@@ -77,7 +83,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
     private var pluginScope: CoroutineScope? = null
 
     /** Accessed on [serverExecutor] only. */
-    private var engine: HttpServerEngine? = null
+    private var engine: KtorServer? = null
 
     private val builtinTools = BuiltinTools { Workspaces.current }
     private val builtinContext = BuiltinContext { Workspaces.current }
@@ -97,19 +103,31 @@ class StarlightMcpPlugin : StarlightPlugin() {
     @Volatile
     private var port: Int = McpRuntime.DEFAULT_PORT
     private var autoStart = true
+    /** A token is required but not set, so every request is rejected; read on the main thread by [isSetupRequired]. */
+    @Volatile
+    private var needsToken = false
+    /** Why the setup is asked for again; null for the first one. */
+    @Volatile
+    private var setupReason: String? = null
 
     private val isRunning: Boolean
         get() = McpRuntime.state.value is ServerState.Running
 
     override fun onEnable() {
-        // StarLight checks only the major and minor version of the workspace plugin, not the patch this was built for.
-        if (Workspaces.apiLevel < Workspaces.API_LEVEL) {
-            LOG.error(LogData.FLAG_NOTIFY) {
-                tr(
-                    "Update the Workspace plugin: MCP Server needs its API level ${Workspaces.API_LEVEL} or later.",
-                    "Workspace 플러그인을 업데이트하세요: MCP 서버에는 API 레벨 ${Workspaces.API_LEVEL} 이상이 필요해요.",
-                )
-            }
+        // StarLight checks only the major and minor version of a dependency, not the patch this was built for.
+        val updateNeeded = when {
+            Workspaces.apiLevel < Workspaces.API_LEVEL -> tr(
+                "Update the Workspace plugin: MCP Server needs its API level ${Workspaces.API_LEVEL} or later.",
+                "Workspace 플러그인을 업데이트하세요: MCP 서버에는 API 레벨 ${Workspaces.API_LEVEL} 이상이 필요해요.",
+            )
+            ktorApiLevel() < KtorServers.API_LEVEL -> tr(
+                "Update the Ktor plugin: MCP Server needs its API level ${KtorServers.API_LEVEL} or later.",
+                "Ktor 플러그인을 업데이트하세요: MCP 서버에는 API 레벨 ${KtorServers.API_LEVEL} 이상이 필요해요.",
+            )
+            else -> null
+        }
+        if (updateNeeded != null) {
+            LOG.error(LogData.FLAG_NOTIFY) { updateNeeded }
             return
         }
         updateConfig(getPluginConfig())
@@ -143,6 +161,20 @@ class StarlightMcpPlugin : StarlightPlugin() {
 
     override fun onConfigUpdated(config: ConfigData, updated: Map<String, Set<String>>) {
         super.onConfigUpdated(config, updated)
+        val neededToken = needsToken
+        applyConfig(config)
+        // The token was removed, or required again without one.
+        if (needsToken && !neededToken && pluginScope != null) {
+            setupReason = tr(
+                "An access token is required but not set, so every request is rejected. Set one.",
+                "접근 토큰이 필수인데 설정되지 않아 모든 요청이 거부돼요. 토큰을 정하세요.",
+            )
+            askForSetup()
+        }
+    }
+
+    /** Takes in [config]: a new address restarts a running server. */
+    private fun applyConfig(config: ConfigData) {
         val oldHost = host
         val oldPort = port
         updateConfig(config)
@@ -168,6 +200,63 @@ class StarlightMcpPlugin : StarlightPlugin() {
         )
         builtinAccess = builtinAccessOf(security.getString(CONF_BUILTIN_ACCESS))
         toolTimeoutMillis = config.category(CATEGORY_TOOLS).getInt(CONF_TIMEOUT, DEF_TIMEOUT_SECONDS) * 1000L
+        needsToken = settings.requireToken && settings.tokenHash == null
+        if (!needsToken)
+            setupReason = null
+    }
+
+    // ------------------------------------------------------------------ setup
+
+    override fun isSetupRequired(): Boolean =
+        needsToken
+
+    override fun getSetupReason(): String? =
+        setupReason
+
+    /** The token, without which every request is rejected, and who may connect. Both are saved into the plugin config. */
+    override fun getSetupStructure(): ConfigStructure = config {
+        category {
+            id = CATEGORY_SECURITY
+            title = tr("Access token", "접근 토큰")
+            textColor = color { COLOR_TITLE }
+            items {
+                tokenOption(tr(
+                    "MCP clients (AI assistants) send it as 'Authorization: Bearer <token>'; put it in the client's settings. Only a hash of it is stored.",
+                    "MCP 클라이언트(AI 어시스턴트)가 'Authorization: Bearer <토큰>' 헤더로 보내는 토큰이에요. 클라이언트 설정에 넣으세요. 토큰은 해시로만 저장돼요.",
+                ))
+            }
+        }
+        category {
+            id = CATEGORY_GENERAL
+            title = tr("Connection", "접속")
+            textColor = color { COLOR_SUB_TITLE }
+            items {
+                bindOption()
+            }
+        }
+    }
+
+    override suspend fun onSetup(values: ConfigData): String? {
+        // The token field gives a hash; left untouched, it is absent.
+        if (values.category(CATEGORY_SECURITY).getString(CONF_TOKEN).isNullOrBlank())
+            return tr("Set an access token.", "접근 토큰을 정하세요.")
+        withContext(Dispatchers.IO) {
+            saveToConfig(values)
+        }
+        // Saving doesn't call onConfigUpdated.
+        applyConfig(getPluginConfig())
+        if (autoStart && pluginScope != null && !isRunning)
+            serverExecutor.execute(::startServer)
+        return null
+    }
+
+    /** Asks for the setup again. StarLight builds from before the setup API lack requestSetup(). */
+    private fun askForSetup() {
+        try {
+            requestSetup()
+        } catch (e: LinkageError) {
+            LOG.debug { "This StarLight build can't ask for the setup: $e" }
+        }
     }
 
     // ------------------------------------------------------------------ projects
@@ -234,11 +323,16 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     LOG.info { "tools/call $name -> $status (${durationMillis}ms)" + (project?.let { " [$it]" } ?: "") }
             },
         )
-        val engine = HttpServerEngine(McpHttpHandler(protocol, { settings }) { message -> LOG.info { message } })
-        try {
-            engine.start(host, port)
+        val engine = try {
+            McpHttpHandler(protocol, { settings }) { message -> LOG.info { message } }.serve(host, port) { e ->
+                LOG.error { tr("MCP server error: $e", "MCP 서버 오류: $e") }
+            }
         } catch (e: Throwable) {
-            McpRuntime.setState(ServerState.Failed(e.message ?: e.toString()))
+            val reason = if (e is PortInUseException)
+                tr("Port ${e.port} is used by ${e.owner}", "${e.owner} 플러그인이 ${e.port} 포트를 쓰고 있어요")
+            else
+                e.message ?: e.toString()
+            McpRuntime.setState(ServerState.Failed(reason))
             LOG.error {
                 tr("Failed to start the MCP server on $host:$port: $e", "$host:$port 에서 MCP 서버를 시작하지 못했어요: $e")
             }
@@ -326,15 +420,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     icon = Icon.LINK
                     iconTintColor = color { COLOR_ICON }
                 }
-                choice {
-                    id = CONF_BIND
-                    title = tr("Accept connections from", "접속 허용 범위")
-                    option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
-                    option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
-                    defaultKey = BIND_ALL
-                    icon = Icon.CLOUD
-                    iconTintColor = color { COLOR_ICON }
-                }
+                bindOption()
                 toggle {
                     id = CONF_AUTO_START
                     title = tr("Start automatically", "자동 시작")
@@ -406,16 +492,7 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     icon = Icon.LOCK
                     iconTintColor = color { COLOR_ICON }
                 }
-                password {
-                    id = CONF_TOKEN
-                    title = tr("Access token", "접근 토큰")
-                    description = tr("Only a hash of the token is stored.", "토큰은 해시로만 저장됩니다.")
-                    hashCode = ::sha256Hex
-                    require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
-                    icon = Icon.KEY
-                    iconTintColor = color { COLOR_ICON }
-                    visibleWhen(CONF_REQUIRE_TOKEN, true)
-                }
+                tokenOption(tr("Only a hash of the token is stored.", "토큰은 해시로만 저장됩니다."), shownWithRequireToken = true)
                 choice {
                     id = CONF_BUILTIN_ACCESS
                     title = tr("Built-in StarLight tools", "StarLight 내장 도구")
@@ -459,6 +536,34 @@ class StarlightMcpPlugin : StarlightPlugin() {
                     iconTintColor = color { COLOR_ICON }
                 }
             }
+        }
+    }
+
+    /** The access token, as a hash: the setup and the settings store it the same way. */
+    private fun ConfigItemBuilder.tokenOption(description: String, shownWithRequireToken: Boolean = false) {
+        password {
+            id = CONF_TOKEN
+            title = tr("Access token", "접근 토큰")
+            this.description = description
+            hashCode = ::sha256Hex
+            require = { value -> if (value.length >= MIN_TOKEN_LENGTH) null else tr("At least $MIN_TOKEN_LENGTH characters", "${MIN_TOKEN_LENGTH}자 이상 입력하세요") }
+            icon = Icon.KEY
+            iconTintColor = Color.parseColor(COLOR_ICON)
+            // The setup dialog has no require_token value to show it by.
+            if (shownWithRequireToken)
+                visibleWhen(CONF_REQUIRE_TOKEN, true)
+        }
+    }
+
+    private fun ConfigItemBuilder.bindOption() {
+        choice {
+            id = CONF_BIND
+            title = tr("Accept connections from", "접속 허용 범위")
+            option(BIND_ALL, tr("All networks ($ANY_HOST)", "모든 네트워크 ($ANY_HOST)"))
+            option(BIND_LOCAL, tr("This device only ($LOCALHOST)", "이 기기에서만 ($LOCALHOST)"))
+            defaultKey = BIND_ALL
+            icon = Icon.CLOUD
+            iconTintColor = Color.parseColor(COLOR_ICON)
         }
     }
 
