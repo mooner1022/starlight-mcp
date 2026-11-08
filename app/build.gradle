@@ -14,9 +14,9 @@ android {
         applicationId "dev.mooner.starlightmcp"
         minSdk 26
         targetSdk 33
-        versionCode 4
+        versionCode 5
         // Used as the plugin version in starlight.json checks.
-        versionName "0.3.0"
+        versionName "0.4.0"
     }
 
     buildTypes {
